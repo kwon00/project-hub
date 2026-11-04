@@ -1,0 +1,39 @@
+# Build and push your own image before installing.
+image:
+  repository: ""
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+# Existing Secret with APP_PASSWORD (12+) and SESSION_SECRET (32+).
+existingSecret: ""
+# true for HTTPS ingress; false only for HTTP port-forward/local testing.
+cookieSecure: true
+# Used only when the empty database creates its first administrator.
+admin:
+  username: admin
+  name: 관리자
+service:
+  port: 80
+persistence:
+  size: 5Gi
+  # null: cluster default. "-": no storage class. Otherwise exact class name.
+  storageClass: null
+  annotations: {}
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: project-hub.example.com
+  tls: []
+  # - secretName: project-hub-tls
+  #   hosts: [project-hub.example.com]
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+nodeSelector: {}
+tolerations: []
+affinity: {}

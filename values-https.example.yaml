@@ -1,0 +1,22 @@
+image:
+  repository: YOUR_REGISTRY/project-hub
+  tag: "1.0.0"
+existingSecret: project-hub-auth
+cookieSecure: true
+# If your nodes need a registry credential:
+# imagePullSecrets:
+#   - name: registry-secret
+persistence:
+  size: 5Gi
+  # Replace if a specific StorageClass is required; null uses cluster default.
+  storageClass: null
+ingress:
+  enabled: true
+  # Set to the installed IngressClass; no controller is installed by this chart.
+  className: YOUR_INGRESS_CLASS
+  host: projects.example.com
+  annotations: {}
+  tls:
+    - secretName: project-hub-tls
+      hosts:
+        - projects.example.com

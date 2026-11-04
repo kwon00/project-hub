@@ -1,0 +1,23 @@
+services:
+  project-hub:
+    build: .
+    image: project-hub:1.0.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8000"
+    environment:
+      APP_PASSWORD: ${APP_PASSWORD:?APP_PASSWORD is required}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET is required}
+      COOKIE_SECURE: "false"
+      DB_PATH: /data/project-hub.db
+    volumes:
+      - project-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  project-data:

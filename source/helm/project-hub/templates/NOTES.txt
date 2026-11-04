@@ -1,0 +1,16 @@
+Project Hub installed.
+
+Credentials come from Secret: {{ .Values.existingSecret }}
+The chart does not generate or print passwords.
+
+{{- if .Values.ingress.enabled }}
+Open the configured ingress host: {{ .Values.ingress.host }}
+Use HTTPS when cookieSecure=true.
+{{- else }}
+For local HTTP access, use cookieSecure=false (testing only):
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "project-hub.fullname" . }} 8080:{{ .Values.service.port }}
+Open http://localhost:8080
+{{- end }}
+
+One replica / Recreate strategy is intentional for SQLite.
+PVC is retained on uninstall. Back up the database before changes.
