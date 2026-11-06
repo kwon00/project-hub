@@ -1,7 +1,7 @@
 # Build and push your own image before installing.
 image:
   repository: ""
-  tag: "1.0.0"
+  tag: "1.3.1"
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 # Existing Secret with APP_PASSWORD (12+) and SESSION_SECRET (32+).

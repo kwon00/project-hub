@@ -1,7 +1,7 @@
 # HTTP port-forward verification. Update repository before installing.
 image:
   repository: YOUR_REGISTRY/project-hub
-  tag: "1.0.0"
+  tag: "1.3.1"
 existingSecret: project-hub-auth
 cookieSecure: false
 persistence:

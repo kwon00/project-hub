@@ -127,7 +127,7 @@ class AppTests(unittest.TestCase):
   a=self.client.get('/api/data').json()['activity'][0]
   self.assertEqual(a['message'],'이전 기록');self.assertEqual(a['actor_name'],'')
   with main.db() as c:
-   self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0],4)
+   self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0],8)
    self.assertEqual(c.execute('SELECT COUNT(*) FROM users').fetchone()[0],1)
  def third_party(self,pid,**updates):
   b=dict(kind='third_party',title='모니터링 에이전트',installed_at='2026-11-03',developer_applied=False,priority='높음',progress=40,owner='설치 담당',notes='적용 테스트 예정',checklist=[{'id':'step1','text':'패키지 설치','done':False},{'id':'step2','text':'개발사 적용 테스트','done':False}]);b.update(updates)
@@ -139,7 +139,7 @@ class AppTests(unittest.TestCase):
    self.assertEqual(self.client.patch(f'/api/items/{iid}/checklist/{cid}',json={'done':True},headers=self.h).status_code,200)
   self.assertEqual(self.client.patch(f'/api/items/{iid}/application',json={'done':True},headers=self.h).status_code,200)
   x=self.client.get('/api/data').json()['items'][0]
-  self.assertTrue(all(t['done'] for t in x['checklist']));self.assertTrue(x['developer_applied']);self.assertEqual(x['progress'],100)
+  self.assertTrue(all(t['done'] for t in x['checklist']));self.assertTrue(x['developer_applied']);self.assertEqual(x['progress'],14)
   self.client.patch(f'/api/items/{iid}/checklist/step1',json={'done':False},headers=self.h)
   x=self.client.get('/api/data').json()['items'][0]
   self.assertFalse(x['checklist'][0]['done']);self.assertTrue(x['checklist'][1]['done']);self.assertTrue(x['developer_applied'])
@@ -156,15 +156,15 @@ class AppTests(unittest.TestCase):
   filename=unquote(r.headers['content-disposition'].split("filename*=UTF-8''")[1])
   self.assertTrue(filename.startswith('프로젝트_ A_테스트_프로젝트_'))
   w=load_workbook(io.BytesIO(r.content));self.assertEqual(w.sheetnames,['개요','일정','3rd-party','개발사','변경이력'])
-  s=w['3rd-party'];self.assertEqual(s['C2'].value.year,2026);self.assertEqual(s['G2'].value,.5)
-  self.assertIn('● 패키지 설치',s['H2'].value);self.assertIn('○ 개발사 적용 테스트',s['H2'].value)
+  s=w['3rd-party'];self.assertEqual(s['C2'].value.year,2026);self.assertEqual(s['O2'].value,0)
+  self.assertIn('● 패키지 설치',s['Q2'].value);self.assertIn('○ 개발사 적용 테스트',s['Q2'].value)
   for sheet in w:
    for row in sheet:
     for cell in row:self.assertEqual(cell.alignment.vertical,'top',(sheet.title,cell.coordinate))
   import zipfile,xml.etree.ElementTree as ET
   with zipfile.ZipFile(io.BytesIO(r.content)) as z:
    root=ET.fromstring(z.read('xl/worksheets/sheet3.xml'));ns={'m':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
-   runs=root.findall('.//m:c[@r="H2"]/m:is/m:r',ns)
+   runs=root.findall('.//m:c[@r="Q2"]/m:is/m:r',ns)
    self.assertIsNotNone(runs[0].find('m:rPr/m:strike',ns));self.assertIsNone(runs[1].find('m:rPr/m:strike',ns))
   third=load_workbook(io.BytesIO(self.client.get('/api/export.xlsx?scope=third_party&project_id='+pid).content))
   self.assertEqual(third.sheetnames,['3rd-party']);self.assertEqual(third.active.max_row,2)
@@ -186,23 +186,23 @@ class AppTests(unittest.TestCase):
   r=self.client.post(f'/api/projects/{pid}/items',json={'kind':'third_party','title':'기본 목록 검증'},headers=self.h)
   self.assertEqual(r.status_code,201,r.text);iid=r.json()['id']
   def current():return next(x for x in self.client.get('/api/data').json()['items'] if x['id']==iid)
-  x=current();self.assertEqual([t['text'] for t in x['checklist']],main.DEFAULT_THIRD_PARTY_STEPS)
-  self.assertEqual(len(x['checklist']),7);self.assertEqual(x['progress'],0);self.assertTrue(all(not t['done'] for t in x['checklist']))
-  for count,t in enumerate(x['checklist'],1):
-   self.client.patch(f'/api/items/{iid}/checklist/'+t['id'],json={'done':True},headers=self.h)
+  x=current();self.assertEqual(x['checklist'],[]);self.assertEqual([t['text'] for t in x['progress_steps']],main.DEFAULT_THIRD_PARTY_STEPS)
+  self.assertEqual(len(x['progress_steps']),7);self.assertEqual(x['progress'],0);self.assertTrue(all(not t['done'] for t in x['progress_steps']))
+  for count,t in enumerate(x['progress_steps'],1):
+   self.client.patch(f'/api/items/{iid}/progress-steps/'+t['id'],json={'done':True},headers=self.h)
    self.assertEqual(current()['progress'],[14,29,43,57,71,86,100][count-1])
   self.assertEqual(current()['status'],'완료')
-  self.client.patch(f'/api/items/{iid}/checklist/'+x['checklist'][0]['id'],json={'done':False},headers=self.h)
+  self.client.patch(f'/api/items/{iid}/progress-steps/'+x['progress_steps'][0]['id'],json={'done':False},headers=self.h)
   self.assertEqual(current()['progress'],86);self.assertEqual(current()['status'],'진행 중')
  def test_third_party_edit_add_remove_and_empty_list_recalculate(self):
   pid,_=self.project();iid,b=self.third_party(pid,progress=99,checklist=[{'id':'1','text':'완료 항목','done':True},{'id':'2','text':'남은 항목','done':False},{'id':'3','text':'추가 점검','done':False}])
   def current():return self.client.get('/api/data').json()['items'][0]
-  self.assertEqual(current()['progress'],33)
+  self.assertEqual(current()['progress'],0)
   b['checklist'].pop();b['checklist'][0]['text']='완료 내용 수정';b['progress']=0
   self.assertEqual(self.client.put('/api/items/'+iid,json=b,headers=self.h).status_code,200)
-  self.assertEqual(current()['progress'],50);self.assertEqual(current()['checklist'][0]['text'],'완료 내용 수정')
+  self.assertEqual(current()['progress'],0);self.assertEqual(current()['checklist'][0]['text'],'완료 내용 수정')
   w=load_workbook(io.BytesIO(self.client.get('/api/export.xlsx?scope=third_party&project_id='+pid).content))
-  self.assertEqual(w['3rd-party']['G2'].value,.5)
+  self.assertEqual(w['3rd-party']['O2'].value,0)
   b['checklist']=[{'id':'remaining','text':'최종 확인','done':False}]
   self.client.put('/api/items/'+iid,json=b,headers=self.h);self.assertEqual(current()['progress'],0)
   b['checklist']=[];self.client.put('/api/items/'+iid,json=b,headers=self.h)
@@ -241,7 +241,7 @@ class AppTests(unittest.TestCase):
   batch={'projects':[{'row':2,'data':dict(name='엑셀 신규',start='2026-11-01',end='2026-12-01')}], 'items':[{'sheet':'3rd-party','row':2,'project_name':'엑셀 신규','data':dict(kind='third_party',title='솔루션 A',checklist=[dict(id='x',text='수신',done=True),dict(id='y',text='설치',done=False)],progress=99)}],'ignored_sheets':['변경이력']}
   commit,summary=self.import_preview(batch);self.assertEqual(summary['counts']['project']['create'],1);self.assertEqual(len(self.client.get('/api/data').json()['projects']),0)
   r=self.client.post('/api/import/commit',json=commit,headers=self.h);self.assertEqual(r.status_code,200,r.text)
-  data=self.client.get('/api/data').json();self.assertEqual(data['items'][0]['progress'],50);self.assertEqual(len(data['activity']),2);self.assertTrue(all(x['actor_username']=='admin' for x in data['activity']))
+  data=self.client.get('/api/data').json();self.assertEqual(data['items'][0]['progress'],0);self.assertEqual(len(data['activity']),2);self.assertTrue(all(x['actor_username']=='admin' for x in data['activity']))
  def test_import_invalid_batch_and_scope(self):
   pid,_=self.project();other,_=self.project('다른 프로젝트')
   batch={'project_id':pid,'projects':[],'items':[{'sheet':'일정','row':2,'project_id':pid,'data':dict(kind='schedule',title='유효',start='2026-11-01',end='2026-11-05')},{'sheet':'일정','row':3,'project_id':other,'data':dict(kind='schedule',title='불가',start='2026-11-01',end='2026-11-05')}]}
@@ -258,9 +258,9 @@ class AppTests(unittest.TestCase):
  def test_import_export_roundtrip_unchanged(self):
   pid,p=self.project();self.item(pid);self.item(pid,kind='third_party',title='솔루션',checklist=[dict(id='stable',text='확인',done=True)])
   data=self.client.get('/api/data').json();project=data['projects'][0];batch={'project_id':pid,'projects':[{'row':2,'id':pid,'data':{k:project[k] for k in main.Project.model_fields if k!='color'}}],'items':[]}
-  for i,x in enumerate(data['items']):batch['items'].append({'sheet':'3rd-party' if x['kind']=='third_party' else '일정','row':i+2,'id':x['id'],'project_id':pid,'data':{k:(x[k] or None) if k in ['start','end','installed_at'] else x[k] for k in main.Item.model_fields}})
+  for i,x in enumerate(data['items']):batch['items'].append({'sheet':'3rd-party' if x['kind']=='third_party' else '일정','row':i+2,'id':x['id'],'project_id':pid,'data':{k:(x[k] or None) if k in ['start','end','installed_at','license_expires_at'] else x[k] for k in main.Item.model_fields}})
   _,summary=self.import_preview(batch);self.assertTrue(all(c['update']==0 and c['create']==0 for c in summary['counts'].values()))
-  wb=load_workbook(io.BytesIO(self.client.get('/api/export.xlsx',params={'scope':'project','project_id':pid}).content));self.assertTrue(wb['3rd-party'].column_dimensions['K'].hidden);self.assertIn('● 확인',wb['3rd-party']['H2'].value)
+  wb=load_workbook(io.BytesIO(self.client.get('/api/export.xlsx',params={'scope':'project','project_id':pid}).content));self.assertTrue(wb['3rd-party'].column_dimensions['T'].hidden);self.assertIn('● 확인',wb['3rd-party']['Q2'].value)
  def test_import_duplicate_row_rejected(self):
   pid,_=self.project();iid,b=self.item(pid);row={'sheet':'일정','row':2,'id':iid,'project_id':pid,'data':b};r=self.client.post('/api/import/preview',json={'projects':[],'items':[row,{**row,'row':3}]},headers=self.h);self.assertEqual(r.status_code,422);self.assertIn('중복',r.text)
 
@@ -278,12 +278,95 @@ class AppTests(unittest.TestCase):
   commit,_=self.import_preview(batch);r=self.client.post('/api/import/commit',json=commit,headers=self.h);self.assertEqual(r.status_code,200,r.text)
   data=self.client.get('/api/data').json();self.assertEqual(len(data['items']),3)
   for item in data['items']:
-   body={k:(item[k] or None) if k in ['start','end','installed_at'] else item[k] for k in main.Item.model_fields}
+   body={k:(item[k] or None) if k in ['start','end','installed_at','license_expires_at'] else item[k] for k in main.Item.model_fields}
    self.assertEqual(self.client.put('/api/items/'+item['id'],json=body,headers=self.h).status_code,422)
    body['title']='보완한 업무'
    if item['kind']=='developer':body['vendor']='개발사'
    if item['kind']=='schedule':body.update(start='2026-11-01',end='2026-11-05')
    self.assertEqual(self.client.put('/api/items/'+item['id'],json=body,headers=self.h).status_code,200)
   self.assertEqual(self.client.get('/api/export.xlsx',params={'scope':'project','project_id':pid}).status_code,200)
+
+ def test_license_fields_and_progress_sections(self):
+  pid,_=self.project();iid,b=self.third_party(pid,license_type='임시',license_expires_at='2026-11-20')
+  x=self.client.get('/api/data').json()['items'][0];self.assertEqual(x['license_type'],'임시');self.assertEqual(x['license_expires_at'],'2026-11-20');self.assertEqual(len(x['progress_steps']),7)
+  self.client.patch(f'/api/items/{iid}/progress-steps/stage-0',json={'done':True},headers=self.h)
+  self.client.patch(f'/api/items/{iid}/checklist/step1',json={'done':True},headers=self.h)
+  x=self.client.get('/api/data').json()['items'][0];self.assertEqual(x['progress'],14);self.assertTrue(x['checklist'][0]['done'])
+  body={k:x[k] for k in main.Item.model_fields};body.update(start=None,end=None,installed_at=None,license_perpetual=True)
+  r=self.client.put('/api/items/'+iid,json=body,headers=self.h);self.assertEqual(r.status_code,200,r.text);x=self.client.get('/api/data').json()['items'][0];self.assertEqual(x['license_expires_at'],'');self.assertTrue(x['license_perpetual']);self.assertEqual(x['progress'],14)
+  self.assertEqual(self.client.patch(f'/api/items/{iid}/progress-steps/invalid',json={'done':True},headers=self.h).status_code,404)
+  body['progress_steps']=[];self.assertEqual(self.client.put('/api/items/'+iid,json=body,headers=self.h).status_code,200);main.init_db();self.assertEqual(self.client.get('/api/data').json()['items'][0]['progress_steps'],[])
+ def test_legacy_defaults_move_to_progress_once(self):
+  pid,_=self.project();iid,_=self.third_party(pid)
+  tasks=[dict(id=str(i),text=t,done=True) for i,t in enumerate(main.LEGACY_THIRD_PARTY_STEPS)]
+  with main.db() as c:
+   c.execute('UPDATE items SET progress_steps=?,checklist=?,developer_applied=1 WHERE id=?',('[]',main.json.dumps(tasks,ensure_ascii=False),iid));c.execute('PRAGMA user_version=5')
+  main.init_db();first=self.client.get('/api/data').json()['items'][0];main.init_db();second=self.client.get('/api/data').json()['items'][0]
+  self.assertEqual(first['checklist'],[]);self.assertEqual(first['progress'],100);self.assertEqual(first['progress_steps'],second['progress_steps']);self.assertEqual(first['id'],iid)
+ def test_license_and_milestone_excel_roundtrip(self):
+  pid,_=self.project();stages=main.new_progress_steps();stages[0]['done']=True;stages[4]['done']=True
+  iid,_=self.third_party(pid,progress_steps=stages,license_type='정식',license_expires_at='2026-12-20')
+  w=load_workbook(io.BytesIO(self.client.get('/api/export.xlsx',params={'project_id':pid}).content));s=w['3rd-party'];headers={c.value:c.column for c in s[1]};self.assertEqual(s.cell(2,headers['라이선스 구분']).value,'정식');self.assertEqual(s.cell(2,headers['라이선스 만료일']).value.day,20);self.assertIn('● 개발사 적용 완료',s.cell(2,headers['진행사항']).value);self.assertIn('○ 패키지 설치',s.cell(2,headers['확인사항']).value)
+  x=self.client.get('/api/data').json()['items'][0];body={k:(x[k] or None) if k in ['start','end','installed_at','license_expires_at'] else x[k] for k in main.Item.model_fields};batch={'project_id':pid,'items':[{'sheet':'3rd-party','row':2,'id':iid,'data':body}]};_,summary=self.import_preview(batch);self.assertEqual(summary['counts']['third_party']['unchanged'],1)
+
+ def test_edit_progress_steps_add_remove_rename_and_restart(self):
+  pid,_=self.project();iid,b=self.third_party(pid)
+  b['progress_steps']=[dict(id='custom-a',text='수정된 진행 항목',done=True),dict(id='stage-4',text='개발 적용 검증',done=False)]
+  r=self.client.put('/api/items/'+iid,json=b,headers=self.h);self.assertEqual(r.status_code,200,r.text)
+  x=self.client.get('/api/data').json()['items'][0];self.assertEqual(x['progress'],50);self.assertEqual(x['progress_steps'][0]['text'],'수정된 진행 항목')
+  self.client.patch('/api/items/'+iid+'/progress-steps/stage-4',json={'done':True},headers=self.h);x=self.client.get('/api/data').json()['items'][0];self.assertEqual(x['progress'],100);self.assertTrue(x['developer_applied'])
+  b['progress_steps']=[dict(id='custom-a',text='최종 완료',done=True)]
+  self.assertEqual(self.client.put('/api/items/'+iid,json=b,headers=self.h).status_code,200);main.init_db();x=self.client.get('/api/data').json()['items'][0];self.assertEqual(len(x['progress_steps']),1);self.assertEqual(x['progress'],100);self.assertFalse(x['developer_applied'])
+  b['progress_steps']=[dict(id='dup',text='A'),dict(id='dup',text='B')];self.assertEqual(self.client.put('/api/items/'+iid,json=b,headers=self.h).status_code,422)
+ def test_custom_progress_import_preserves_ids_and_empty_list(self):
+  pid,_=self.project();iid,b=self.third_party(pid,progress_steps=[dict(id='my-stage',text='사용자 단계',done=False)])
+  batch={'project_id':pid,'items':[{'sheet':'3rd-party','row':2,'id':iid,'data':{'kind':'third_party','title':b['title'],'progress_steps':[dict(id='excel-0',text='이름 변경',done=True)]}}]}
+  commit,_=self.import_preview(batch);self.assertEqual(self.client.post('/api/import/commit',json=commit,headers=self.h).status_code,200);x=self.client.get('/api/data').json()['items'][0];self.assertEqual(x['progress_steps'][0]['id'],'my-stage');self.assertEqual(x['progress'],100)
+  batch['items'][0]['data']['progress_steps']=[];commit,_=self.import_preview(batch);self.assertEqual(self.client.post('/api/import/commit',json=commit,headers=self.h).status_code,200);main.init_db();x=self.client.get('/api/data').json()['items'][0];self.assertEqual(x['progress_steps'],[]);self.assertEqual(x['progress'],0)
+
+ def test_list_autosave_preserves_general_fields_and_audits_actor(self):
+  pid,_=self.project();iid,b=self.third_party(pid,owner='원래 담당',notes='원래 메모',license_type='정식',license_expires_at='2026-12-05')
+  stages=[dict(id='s1',text='자동 저장 단계',done=True),dict(id='stage-4',text='개발 적용',done=False)];checks=[dict(id='c1',text='확인 수정',done=True)]
+  payload=dict(progress_steps=stages,checklist=checks,owner='덮어쓰면 안됨',notes='덮어쓰면 안됨')
+  r=self.client.patch('/api/items/'+iid+'/lists',json=payload,headers=self.h);self.assertEqual(r.status_code,200,r.text);x=r.json();self.assertEqual(x['progress'],50);self.assertEqual(x['owner'],'원래 담당');self.assertEqual(x['notes'],'원래 메모');self.assertEqual(x['license_expires_at'],'2026-12-05');self.assertEqual(x['checklist'],checks)
+  data=self.client.get('/api/data').json();count=len(data['activity']);self.assertEqual(data['activity'][0]['actor_username'],'admin');self.assertIn('자동 저장',data['activity'][0]['message'])
+  self.client.patch('/api/items/'+iid+'/lists',json=payload,headers=self.h);self.assertEqual(len(self.client.get('/api/data').json()['activity']),count)
+  stages[1]['done']=True;r=self.client.patch('/api/items/'+iid+'/lists',json=dict(progress_steps=stages,checklist=[]),headers=self.h);self.assertEqual(r.json()['progress'],100);self.assertTrue(r.json()['developer_applied']);self.assertEqual(r.json()['checklist'],[])
+  self.client.patch('/api/items/'+iid+'/lists',json=dict(progress_steps=[],checklist=[]),headers=self.h);main.init_db();self.assertEqual(self.client.get('/api/data').json()['items'][0]['progress_steps'],[])
+ def test_list_autosave_validation_auth_and_incomplete_import(self):
+  pid,_=self.project();iid,_=self.item(pid)
+  route='/api/items/'+iid+'/lists';payload={'progress_steps':[],'checklist':[]};self.assertEqual(self.client.patch(route,json=payload,headers=self.h).status_code,404);self.assertEqual(TestClient(main.app).patch(route,json=payload,headers=self.h).status_code,401)
+  batch={'project_id':pid,'items':[{'sheet':'3rd-party','row':2,'data':{'kind':'third_party','title':''}}]};commit,_=self.import_preview(batch);self.client.post('/api/import/commit',json=commit,headers=self.h);x=next(x for x in self.client.get('/api/data').json()['items'] if x['kind']=='third_party');route='/api/items/'+x['id']+'/lists'
+  r=self.client.patch(route,json={'progress_steps':[{'id':'test','text':'필수값 없는 항목에서도 저장','done':True}],'checklist':[]},headers=self.h);self.assertEqual(r.status_code,200,r.text);self.assertEqual(r.json()['title'],'');self.assertEqual(r.json()['progress'],100)
+  bad={'progress_steps':[{'id':'dup','text':'A'},{'id':'dup','text':'B'}],'checklist':[]};self.assertEqual(self.client.patch(route,json=bad,headers=self.h).status_code,422);self.assertEqual(self.client.patch(route,json=payload).status_code,403)
+
+ def test_third_party_contacts_roundtrip_export_and_partial_save(self):
+  pid,_=self.project();iid,b=self.third_party(pid,company_name='테스트 업체',sales_contact='영업 담당',engineer_contact='기술 담당')
+  x=self.client.get('/api/data').json()['items'][0];self.assertEqual(x['owner'],'기술 담당')
+  self.client.patch('/api/items/'+iid+'/lists',json={'progress_steps':[],'checklist':[],'company_name':'덮어쓰기 금지'},headers=self.h)
+  x=self.client.get('/api/data').json()['items'][0];self.assertEqual(x['company_name'],'테스트 업체');self.assertEqual(x['sales_contact'],'영업 담당');self.assertEqual(x['engineer_contact'],'기술 담당')
+  wb=load_workbook(io.BytesIO(self.client.get('/api/export.xlsx',params={'scope':'third_party','project_id':pid}).content));rows=list(wb.active.values);record=dict(zip(rows[0],rows[1]));self.assertEqual(record['업체명'],'테스트 업체');self.assertEqual(record['담당 영업 이름'],'영업 담당');self.assertEqual(record['담당 엔지니어 이름'],'기술 담당');self.assertNotIn('담당자',rows[0])
+  batch={'project_id':pid,'items':[{'sheet':'3rd-party','row':2,'id':iid,'data':{'kind':'third_party','company_name':'새 업체','sales_contact':'새 영업','engineer_contact':''}}]};commit,_=self.import_preview(batch);r=self.client.post('/api/import/commit',json=commit,headers=self.h);self.assertEqual(r.status_code,200,r.text)
+  main.init_db();x=self.client.get('/api/data').json()['items'][0];self.assertEqual(x['company_name'],'새 업체');self.assertEqual(x['sales_contact'],'새 영업');self.assertEqual(x['engineer_contact'],'');self.assertEqual(x['owner'],'')
+ def test_contacts_migrate_old_owner_once(self):
+  pid,_=self.project();iid,_=self.third_party(pid,owner='기존 담당자')
+  with main.db() as con:
+   for k in ['company_name','sales_contact','engineer_contact']:con.execute('ALTER TABLE items DROP COLUMN '+k)
+   con.execute('PRAGMA user_version=6')
+  main.init_db();x=self.client.get('/api/data').json()['items'][0];self.assertEqual(x['engineer_contact'],'기존 담당자');self.assertEqual(x['company_name'],'');self.assertEqual(x['sales_contact'],'')
+  with main.db() as con:con.execute("UPDATE items SET engineer_contact='' WHERE id=?",(iid,))
+  main.init_db();self.assertEqual(self.client.get('/api/data').json()['items'][0]['engineer_contact'],'')
+
+ def test_sales_engineer_details_persist_export_import_and_autosave(self):
+  pid,_=self.project();details={'sales_contact':'영업 이름','sales_phone':'010-0012-0034','sales_email':'sales@example.com','engineer_contact':'기술 이름','engineer_phone':'+82 10 1234 5678','engineer_email':'engineer@example.com'};iid,b=self.third_party(pid,**details)
+  x=self.client.get('/api/data').json()['items'][0]
+  for k,v in details.items():self.assertEqual(x[k],v)
+  self.client.patch('/api/items/'+iid+'/lists',json={'progress_steps':[],'checklist':[],'sales_email':'discard@example.com'},headers=self.h)
+  main.init_db();x=self.client.get('/api/data').json()['items'][0]
+  for k,v in details.items():self.assertEqual(x[k],v)
+  wb=load_workbook(io.BytesIO(self.client.get('/api/export.xlsx',params={'scope':'third_party','project_id':pid}).content));rows=list(wb.active.values);record=dict(zip(rows[0],rows[1]))
+  for label,key in [('담당 영업 이름','sales_contact'),('담당 영업 연락처','sales_phone'),('담당 영업 메일','sales_email'),('담당 엔지니어 이름','engineer_contact'),('담당 엔지니어 연락처','engineer_phone'),('담당 엔지니어 메일','engineer_email')]:self.assertEqual(record[label],details[key])
+  details.update(sales_phone='',engineer_email='new@example.com');batch={'project_id':pid,'items':[{'sheet':'3rd-party','row':2,'id':iid,'data':{'kind':'third_party',**details}}]};commit,_=self.import_preview(batch);self.client.post('/api/import/commit',json=commit,headers=self.h);x=self.client.get('/api/data').json()['items'][0]
+  for k,v in details.items():self.assertEqual(x[k],v)
 
 if __name__=='__main__':unittest.main()

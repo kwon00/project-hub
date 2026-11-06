@@ -46,7 +46,21 @@ def db():
 def now():
     return datetime.now(timezone.utc).isoformat()
 
-DEFAULT_THIRD_PARTY_STEPS = ['업체 컨택하기', '설치 일자 확정', '설치 전 구성 확인(OS, 디스크, 스펙, 특이사항 등)', '솔루션 설치 파일 수신', '솔루션 적용 완료', '매뉴얼/가이드 수신', '구축 완료 보고서 수신']
+LEGACY_THIRD_PARTY_STEPS = ['업체 컨택하기', '설치 일자 확정', '설치 전 구성 확인(OS, 디스크, 스펙, 특이사항 등)', '솔루션 설치 파일 수신', '솔루션 적용 완료', '매뉴얼/가이드 수신', '구축 완료 보고서 수신']
+DEFAULT_THIRD_PARTY_STEPS = ['업체 컨택/설치 일자 확정', '설치 전 구성 확인 (OS, 디스크, 스펙, 특이사항 등)', '솔루션 설치 파일 수신', '솔루션 적용 완료', '개발사 적용 완료', '매뉴얼/가이드 수신', '구축 완료 보고서 수신']
+
+def new_progress_steps():
+    return [{'id': f'stage-{i}', 'text': text, 'done': False} for i, text in enumerate(DEFAULT_THIRD_PARTY_STEPS)]
+
+def migrate_progress(checklist, applied):
+    stages = new_progress_steps()
+    stages[4]['done'] = bool(applied)
+    if len(checklist) == 7 and [t['text'] for t in checklist] == LEGACY_THIRD_PARTY_STEPS:
+        for new, old in [(1,2),(2,3),(3,4),(5,5),(6,6)]:
+            stages[new]['done'] = bool(checklist[old]['done'])
+        stages[0]['done'] = bool(checklist[0]['done'] and checklist[1]['done'])
+        checklist = []
+    return stages, checklist
 
 def checklist_progress(tasks):
     total = len(tasks)
@@ -59,6 +73,7 @@ def third_party_status(progress):
 def init_db():
     Path(DB_PATH).parent.mkdir(parents=True, exist_ok=True)
     with db() as con:
+        previous_version = con.execute('PRAGMA user_version').fetchone()[0]
         con.execute('PRAGMA journal_mode=WAL')
         con.executescript('''
         CREATE TABLE IF NOT EXISTS projects (
@@ -80,7 +95,7 @@ def init_db():
           id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
           password_hash TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
           session_version INTEGER NOT NULL DEFAULT 1);
-        PRAGMA user_version=4;
+        PRAGMA user_version=8;
         ''')
         project_columns = {row['name'] for row in con.execute('PRAGMA table_info(projects)')}
         if 'color' not in project_columns:
@@ -91,23 +106,38 @@ def init_db():
                 con.execute(f"ALTER TABLE activity ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
 
         item_columns = {row['name'] for row in con.execute('PRAGMA table_info(items)')}
-        for column, declaration in [('installed_at', "TEXT NOT NULL DEFAULT ''"),
+        for column, declaration in [('company_name', "TEXT NOT NULL DEFAULT ''"),
+                                    ('sales_contact', "TEXT NOT NULL DEFAULT ''"),
+                                    ('sales_phone', "TEXT NOT NULL DEFAULT ''"),
+                                    ('sales_email', "TEXT NOT NULL DEFAULT ''"),
+                                    ('engineer_phone', "TEXT NOT NULL DEFAULT ''"),
+                                    ('engineer_email', "TEXT NOT NULL DEFAULT ''"),
+                                    ('engineer_contact', "TEXT NOT NULL DEFAULT ''"),
+                                    ('installed_at', "TEXT NOT NULL DEFAULT ''"),
                                     ('developer_applied', 'INTEGER NOT NULL DEFAULT 0'),
-                                    ('checklist', "TEXT NOT NULL DEFAULT '[]'")]:
+                                    ('checklist', "TEXT NOT NULL DEFAULT '[]'"),
+                                    ('progress_steps', "TEXT NOT NULL DEFAULT '[]'"),
+                                    ('license_type', "TEXT NOT NULL DEFAULT ''"),
+                                    ('license_perpetual', 'INTEGER NOT NULL DEFAULT 0'),
+                                    ('license_expires_at', "TEXT NOT NULL DEFAULT ''")]:
             if column not in item_columns:
                 con.execute(f'ALTER TABLE items ADD COLUMN {column} {declaration}')
+        if 'engineer_contact' not in item_columns:
+            con.execute("UPDATE items SET engineer_contact=owner WHERE kind IN ('third_party','partner')")
         # Preserve old partner titles/notes as a child checklist, keeping IDs and dates.
         for row in con.execute("SELECT * FROM items WHERE kind='partner'").fetchall():
             tasks = [{'id': secrets.token_hex(10), 'text': row['title'] + ('\n' + row['notes'] if row['notes'] else ''), 'done': row['status'] == '완료'}]
             con.execute("UPDATE items SET kind='third_party',title=?,checklist=? WHERE id=?",
                         (row['vendor'] or row['title'], json.dumps(tasks, ensure_ascii=False), row['id']))
 
-        # Recalculate existing percentages without adding/replacing checklist entries.
-        for row in con.execute("SELECT id,checklist,progress,status FROM items WHERE kind='third_party'").fetchall():
-            value = checklist_progress(json.loads(row['checklist']))
-            status = third_party_status(value)
-            if value != row['progress'] or status != row['status']:
-                con.execute('UPDATE items SET progress=?,status=? WHERE id=?', (value, status, row['id']))
+        for row in con.execute("SELECT * FROM items WHERE kind='third_party'").fetchall():
+            stages = json.loads(row['progress_steps'])
+            checks = json.loads(row['checklist'])
+            if not stages and previous_version < 6:
+                stages, checks = migrate_progress(checks, row['developer_applied'])
+            value = checklist_progress(stages)
+            con.execute('UPDATE items SET progress_steps=?,checklist=?,developer_applied=?,progress=?,status=? WHERE id=?',
+                        (json.dumps(stages, ensure_ascii=False), json.dumps(checks, ensure_ascii=False), int(any(t['id']=='stage-4' and t['done'] for t in stages)), value, third_party_status(value), row['id']))
 
 def hash_password(password):
     if len(password) < 12:
@@ -147,7 +177,7 @@ async def lifespan(app):
     bootstrap_admin()
     yield
 
-app = FastAPI(title='Project Hub', version='1.0.0', lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title='Project Hub', version='1.3.1', lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.mount('/static', StaticFiles(directory=STATIC), name='static')
 
 @app.middleware('http')
@@ -265,9 +295,20 @@ class Item(BaseModel):
     priority: PRIORITIES = '보통'
     progress: int = Field(default=0, ge=0, le=100)
     notes: str = Field(default='', max_length=15000)
+    company_name: str = Field(default='', max_length=160)
+    sales_contact: str = Field(default='', max_length=100)
+    sales_phone: str = Field(default='', max_length=100)
+    sales_email: str = Field(default='', max_length=254)
+    engineer_phone: str = Field(default='', max_length=100)
+    engineer_email: str = Field(default='', max_length=254)
+    engineer_contact: str = Field(default='', max_length=100)
     installed_at: date | None = None
     developer_applied: bool = False
     checklist: list[ChecklistEntry] = Field(default_factory=list, max_length=100)
+    progress_steps: list[ChecklistEntry] = Field(default_factory=list, max_length=100)
+    license_type: Literal['', '정식', '임시'] = ''
+    license_perpetual: bool = False
+    license_expires_at: date | None = None
 
     @model_validator(mode='after')
     def check(self, info: ValidationInfo):
@@ -285,14 +326,24 @@ class Item(BaseModel):
                 self.progress = 100
             elif self.progress == 100:
                 raise ValueError('진행률 100%는 완료 상태로 설정하세요.')
-            if self.checklist or self.developer_applied or self.installed_at:
+            if self.checklist or self.progress_steps or self.developer_applied or self.installed_at or self.license_type or self.license_perpetual or self.license_expires_at:
                 raise ValueError('설치 및 체크리스트는 3rd-party 항목에서만 사용할 수 있습니다.')
         else:
+            if 'engineer_contact' not in self.model_fields_set:
+                self.engineer_contact = self.owner
+            self.owner = self.engineer_contact
             if self.start and self.end and self.end < self.start:
                 raise ValueError('종료일은 시작일 이후여야 합니다.')
-            if 'checklist' not in self.model_fields_set:
-                self.checklist = [ChecklistEntry(id=secrets.token_hex(12), text=text) for text in DEFAULT_THIRD_PARTY_STEPS]
-            self.progress = checklist_progress([entry.model_dump() for entry in self.checklist])
+            if 'progress_steps' not in self.model_fields_set:
+                stages, checks = migrate_progress([t.model_dump() for t in self.checklist], self.developer_applied)
+                self.progress_steps = [ChecklistEntry(**t) for t in stages]
+                self.checklist = [ChecklistEntry(**t) for t in checks]
+            if len({t.id for t in self.progress_steps}) != len(self.progress_steps):
+                raise ValueError('진행사항 ID가 중복됩니다.')
+            self.developer_applied = any(t.id == 'stage-4' and t.done for t in self.progress_steps)
+            if self.license_perpetual:
+                self.license_expires_at = None
+            self.progress = checklist_progress([entry.model_dump() for entry in self.progress_steps])
             self.status = third_party_status(self.progress)
             if len({entry.id for entry in self.checklist}) != len(self.checklist):
                 raise ValueError('진행사항 ID가 중복됩니다.')
@@ -300,18 +351,22 @@ class Item(BaseModel):
 
 def item_fields(body):
     fields = body.model_dump(mode='json')
-    fields['checklist'] = json.dumps(fields['checklist'], ensure_ascii=False)
+    for key in ['checklist', 'progress_steps']:
+        fields[key] = json.dumps(fields[key], ensure_ascii=False)
+    fields['license_perpetual'] = int(fields['license_perpetual'])
     fields['developer_applied'] = int(fields['developer_applied'])
-    for key in ['start', 'end', 'installed_at']:
+    for key in ['start', 'end', 'installed_at', 'license_expires_at']:
         fields[key] = fields[key] or ''
     return fields
 
 def item_dict(row):
     result = dict(row)
-    result['checklist'] = json.loads(result['checklist'])
+    for key in ['checklist', 'progress_steps']:
+        result[key] = json.loads(result[key])
+    result['license_perpetual'] = bool(result['license_perpetual'])
     result['developer_applied'] = bool(result['developer_applied'])
     if result['kind'] == 'third_party':
-        result['progress'] = checklist_progress(result['checklist'])
+        result['progress'] = checklist_progress(result['progress_steps'])
         result['status'] = third_party_status(result['progress'])
     return result
 
@@ -402,6 +457,34 @@ def delete_item(iid: str, actor=Depends(auth)):
         con.execute('DELETE FROM items WHERE id=?', (iid,))
     return {'ok': True}
 
+class ListsPatch(BaseModel):
+    progress_steps: list[ChecklistEntry] = Field(max_length=100)
+    checklist: list[ChecklistEntry] = Field(max_length=100)
+
+    @model_validator(mode='after')
+    def unique_ids(self):
+        for tasks in [self.progress_steps, self.checklist]:
+            if len({t.id for t in tasks}) != len(tasks):
+                raise ValueError('체크 항목 ID가 중복됩니다.')
+        return self
+
+@app.patch('/api/items/{iid}/lists', dependencies=[Depends(auth)])
+def update_lists(iid: str, body: ListsPatch, actor=Depends(auth)):
+    stages = [t.model_dump() for t in body.progress_steps]
+    checks = [t.model_dump() for t in body.checklist]
+    with db() as con:
+        con.execute('BEGIN IMMEDIATE')
+        row = con.execute("SELECT * FROM items WHERE id=? AND kind='third_party'", (iid,)).fetchone()
+        if not row:
+            raise HTTPException(404, '3rd-party를 찾을 수 없습니다.')
+        if stages != json.loads(row['progress_steps']) or checks != json.loads(row['checklist']):
+            value = checklist_progress(stages)
+            con.execute('UPDATE items SET progress_steps=?,checklist=?,developer_applied=?,progress=?,status=?,updated_at=? WHERE id=?',
+                        (json.dumps(stages, ensure_ascii=False), json.dumps(checks, ensure_ascii=False), int(any(t['id']=='stage-4' and t['done'] for t in stages)), value, third_party_status(value), now(), iid))
+            record(con, row['project_id'], f'3rd-party 진행사항·확인사항 자동 저장 · {row["title"]}', actor)
+        result = item_dict(con.execute('SELECT * FROM items WHERE id=?', (iid,)).fetchone())
+    return result
+
 class Toggle(BaseModel):
     done: bool
 
@@ -418,23 +501,33 @@ def toggle_checklist(iid: str, cid: str, body: Toggle, actor=Depends(auth)):
             raise HTTPException(404, '진행사항을 찾을 수 없습니다.')
         if entry['done'] != body.done:
             entry['done'] = body.done
-            value = checklist_progress(tasks)
-            con.execute('UPDATE items SET checklist=?,progress=?,status=?,updated_at=? WHERE id=?',
-                        (json.dumps(tasks, ensure_ascii=False), value, third_party_status(value), now(), iid))
-            record(con, row['project_id'], f'3rd-party 진행사항 {"완료" if body.done else "완료 취소"} · {row["title"]} · {entry["text"]}', actor)
+            con.execute('UPDATE items SET checklist=?,updated_at=? WHERE id=?',
+                        (json.dumps(tasks, ensure_ascii=False), now(), iid))
+            record(con, row['project_id'], f'3rd-party 확인사항 {"완료" if body.done else "완료 취소"} · {row["title"]} · {entry["text"]}', actor)
     return {'ok': True}
 
-@app.patch('/api/items/{iid}/application', dependencies=[Depends(auth)])
-def toggle_application(iid: str, body: Toggle, actor=Depends(auth)):
+@app.patch('/api/items/{iid}/progress-steps/{sid}', dependencies=[Depends(auth)])
+def toggle_progress_step(iid: str, sid: str, body: Toggle, actor=Depends(auth)):
     with db() as con:
         con.execute('BEGIN IMMEDIATE')
         row = con.execute("SELECT * FROM items WHERE id=? AND kind='third_party'", (iid,)).fetchone()
         if not row:
             raise HTTPException(404, '3rd-party를 찾을 수 없습니다.')
-        if bool(row['developer_applied']) != body.done:
-            con.execute('UPDATE items SET developer_applied=?,updated_at=? WHERE id=?', (int(body.done), now(), iid))
-            record(con, row['project_id'], f'개발사 적용 {"완료" if body.done else "완료 취소"} · {row["title"]}', actor)
+        stages = json.loads(row['progress_steps'])
+        entry = next((t for t in stages if t['id'] == sid), None)
+        if entry is None:
+            raise HTTPException(404, '진행사항을 찾을 수 없습니다.')
+        if entry['done'] != body.done:
+            entry['done'] = body.done
+            value = checklist_progress(stages)
+            con.execute('UPDATE items SET progress_steps=?,developer_applied=?,progress=?,status=?,updated_at=? WHERE id=?',
+                        (json.dumps(stages, ensure_ascii=False), int(any(t['id']=='stage-4' and t['done'] for t in stages)), value, third_party_status(value), now(), iid))
+            record(con, row['project_id'], f'3rd-party 진행사항 {"완료" if body.done else "완료 취소"} · {row["title"]} · {entry["text"]}', actor)
     return {'ok': True}
+
+@app.patch('/api/items/{iid}/application', dependencies=[Depends(auth)])
+def toggle_application(iid: str, body: Toggle, actor=Depends(auth)):
+    return toggle_progress_step(iid, 'stage-4', body, actor)
 
 # Native XLSX generated with the standard library. User text is always inlineStr,
 # never formula XML. Dates are Excel numeric serials; percentages are numeric.
@@ -505,7 +598,7 @@ def export(project_id: str | None = None, scope: Literal['calendar', 'project', 
         labels = {'schedule': '일정', 'developer': '개발사', 'third_party': '3rd-party 설치'}
         return [header] + [[names[x['project_id']]] + ([labels[x['kind']]] if include_kind else []) +
                           [x['title'],x['vendor'],x['owner'],typed_date(x['start']),typed_date(x['end']),x['status'],x['priority'],x['progress']/100,x['notes'],x['updated_at'],x['project_id'],x['id']] for x in selected]
-    third_rows = [['프로젝트','3rd-party 이름','설치 일자','개발사 적용 완료','담당자','우선순위','진행률','진행사항','메모','최근 수정(UTC)','_project_id','_record_id']] + [[names[x['project_id']],x['title'],typed_date(x['installed_at']),'완료' if x['developer_applied'] else '미완료',x['owner'],x['priority'],x['progress']/100,{'checklist': x['checklist']},x['notes'],x['updated_at'],x['project_id'],x['id']] for x in items if x['kind']=='third_party']
+    third_rows = [['프로젝트','3rd-party 이름','설치 일자','라이선스 구분','영구 라이선스','라이선스 만료일','업체명','담당 영업 이름','담당 영업 연락처','담당 영업 메일','담당 엔지니어 이름','담당 엔지니어 연락처','담당 엔지니어 메일','우선순위','진행률','진행사항','확인사항','메모','최근 수정(UTC)','_project_id','_record_id']] + [[names[x['project_id']],x['title'],typed_date(x['installed_at']),x['license_type'],'영구' if x['license_perpetual'] else '기간제',typed_date(x['license_expires_at']),x['company_name'],x['sales_contact'],x['sales_phone'],x['sales_email'],x['engineer_contact'],x['engineer_phone'],x['engineer_email'],x['priority'],x['progress']/100,{'checklist': x['progress_steps']},{'checklist': x['checklist']},x['notes'],x['updated_at'],x['project_id'],x['id']] for x in items if x['kind']=='third_party']
     if scope == 'calendar':
         calendar_items = [dict(x, start=x['installed_at'], end=x['installed_at']) if x['kind']=='third_party' else x for x in items if x['kind']!='third_party' or x['installed_at']]
         sheets = [('일정', item_rows(calendar_items, True))]
@@ -533,7 +626,7 @@ class ImportItemRow(BaseModel):
     id: str | None = Field(default=None, max_length=100)
     project_id: str | None = Field(default=None, max_length=100)
     project_name: str = Field(default='', max_length=160)
-    data: dict = Field(max_length=20)
+    data: dict = Field(max_length=32)
 
 class ImportBatch(BaseModel):
     project_id: str | None = Field(default=None, max_length=100)
@@ -635,11 +728,31 @@ def plan_excel_import(con, batch):
             base = {k: old[k] for k in Item.model_fields if k in old} if old else {}
             if old:
                 base['checklist'] = json.loads(old['checklist'])
-                for key in ['start','end','installed_at']:
+                base['progress_steps'] = json.loads(old['progress_steps'])
+                for key in ['start','end','installed_at','license_expires_at']:
                     base[key] = base[key] or None
             payload = {**base, **row.data}
+            if kind == 'third_party' and 'progress_steps' not in row.data and 'developer_applied' in row.data and base.get('progress_steps'):
+                payload['progress_steps'] = [dict(t, done=row.data['developer_applied']) if t['id']=='stage-4' else t for t in base['progress_steps']]
             if kind == 'third_party':
                 payload['progress'] = 0
+                if 'progress_steps' in row.data:
+                    existing_stages = json.loads(old['progress_steps']) if old else []
+                    incoming_stages = row.data['progress_steps']
+                    if not isinstance(incoming_stages, list):
+                        raise ValueError('진행사항은 목록으로 입력하세요.')
+                    used_stage_ids = set()
+                    reconciled_stages = []
+                    for idx, entry in enumerate(incoming_stages):
+                        match = next((t for t in existing_stages if t['id'] not in used_stage_ids and t['text'] == entry.get('text')), None)
+                        if match is None and idx < len(existing_stages) and existing_stages[idx]['id'] not in used_stage_ids:
+                            match = existing_stages[idx]
+                        sid = match['id'] if match else entry.get('id') or secrets.token_hex(12)
+                        if sid in used_stage_ids:
+                            sid = secrets.token_hex(12)
+                        used_stage_ids.add(sid)
+                        reconciled_stages.append({'id': sid, 'text': entry.get('text',''), 'done': entry.get('done', False)})
+                    payload['progress_steps'] = reconciled_stages
                 if 'checklist' in row.data:
                     existing = json.loads(old['checklist']) if old else []
                     taken = set()

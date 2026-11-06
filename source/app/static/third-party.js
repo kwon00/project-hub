@@ -1,7 +1,10 @@
-/* Checklist defaults and completion ratio shared by the UI and review adapter. */
+/* Fixed progress milestones, editable confirmations, and license status. */
 (()=>{
-const steps=Object.freeze(["업체 컨택하기", "설치 일자 확정", "설치 전 구성 확인(OS, 디스크, 스펙, 특이사항 등)", "솔루션 설치 파일 수신", "솔루션 적용 완료", "매뉴얼/가이드 수신", "구축 완료 보고서 수신"]);
-const progress=tasks=>{const valid=(tasks||[]).filter(t=>t.text?.trim());return valid.length?Math.round(valid.filter(t=>t.done).length*100/valid.length):0;};
-const sync=item=>{if(item.kind==='third_party'){item.progress=progress(item.checklist);item.status=item.progress===100?'완료':item.progress?'진행 중':'예정';}return item;};
-window.ProjectHubThirdParty=Object.freeze({steps,progress,sync,newChecklist:()=>steps.map(text=>({id:crypto.randomUUID(),text,done:false}))});
+const steps=Object.freeze(['업체 컨택/설치 일자 확정','설치 전 구성 확인 (OS, 디스크, 스펙, 특이사항 등)','솔루션 설치 파일 수신','솔루션 적용 완료','개발사 적용 완료','매뉴얼/가이드 수신','구축 완료 보고서 수신']);
+const legacy=['업체 컨택하기','설치 일자 확정','설치 전 구성 확인(OS, 디스크, 스펙, 특이사항 등)','솔루션 설치 파일 수신','솔루션 적용 완료','매뉴얼/가이드 수신','구축 완료 보고서 수신'];
+const newProgressSteps=()=>steps.map((text,i)=>({id:'stage-'+i,text,done:false}));
+const progress=tasks=>tasks?.length?Math.round(tasks.filter(t=>t.done).length*100/tasks.length):0;
+const sync=item=>{if(item.kind==='third_party'){item.company_name=item.company_name??'';item.sales_contact=item.sales_contact??'';item.engineer_contact=item.engineer_contact??item.owner??'';for(const k of ['sales_phone','sales_email','engineer_phone','engineer_email'])item[k]=item[k]??'';item.owner=item.engineer_contact;item.checklist=item.checklist||[];if(!Array.isArray(item.progress_steps)){item.progress_steps=newProgressSteps();item.progress_steps[4].done=!!item.developer_applied;if(item.checklist.length===7&&item.checklist.every((t,i)=>t.text===legacy[i])){for(const [n,o] of [[1,2],[2,3],[3,4],[5,5],[6,6]])item.progress_steps[n].done=!!item.checklist[o].done;item.progress_steps[0].done=!!(item.checklist[0].done&&item.checklist[1].done);item.checklist=[];}}item.developer_applied=item.progress_steps.some(t=>t.id==='stage-4'&&t.done);item.license_type=item.license_type||'';item.license_perpetual=!!item.license_perpetual;item.license_expires_at=item.license_perpetual?'':item.license_expires_at||'';item.progress=progress(item.progress_steps);item.status=item.progress===100?'완료':item.progress?'진행 중':'예정';}return item;};
+const license=(item,today)=>{if(item.license_perpetual)return {urgent:false,critical:false,label:'영구',days:null};if(!item.license_expires_at)return {urgent:false,critical:false,label:'만료일 미정',days:null};const days=Math.round((Date.parse(item.license_expires_at+'T00:00:00Z')-Date.parse(today+'T00:00:00Z'))/86400000);return {urgent:days<=30,critical:days<=14,label:days<0?'D+'+Math.abs(days)+' · 만료':days===0?'D-Day · 오늘 만료':'D-'+days,days};};
+window.ProjectHubThirdParty=Object.freeze({steps,progress,sync,license,newProgressSteps,newChecklist:()=>[]});
 })();

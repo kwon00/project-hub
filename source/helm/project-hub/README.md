@@ -9,7 +9,7 @@
 - 단일 Pod / Recreate / PVC 5Gi. PVC는 helm uninstall 시에도 유지합니다. 이미 데이터가 있는 PVC를 재사용하면 기존 데이터가 유지됩니다.
 
 ```bash
-helm upgrade --install projects ./project-hub-1.0.0.tgz \
+helm upgrade --install projects ./project-hub-1.3.1.tgz \
   -n project-hub --create-namespace \
   --set image.repository=YOUR_REGISTRY/project-hub \
   --set existingSecret=project-hub-auth \
